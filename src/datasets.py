@@ -10,7 +10,7 @@ import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 
-from .models import Encoder
+from .models_v2 import Encoder
 from .preprocess import Tokenizer, LabelEncoder
 
 logger = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ class DatasetManager:
             left = 0
             right = width
         img = img[left:right, top:bottom]
-        return tf.image.resize(img, [299, 299], method="bilinear", antialias=True)
+        return tf.image.resize(img, [350, 350], method="bilinear", antialias=True)
 
     @staticmethod
     def _serialize_example(image, caption, style, additional_captions):
