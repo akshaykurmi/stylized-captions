@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import os
@@ -5,12 +6,11 @@ import tarfile
 import urllib.request
 from urllib.error import HTTPError
 
-import io
 import numpy as np
 import tensorflow as tf
 from tqdm import tqdm
 
-from .models_v2 import Encoder
+from .image_encoders import InceptionResNetEncoder
 from .preprocess import Tokenizer, LabelEncoder
 
 logger = logging.getLogger(__name__)
@@ -92,13 +92,15 @@ class DatasetManager:
                 tf.py_function(self.style_encoder.transform, (s,), tf.int32),
                 tf.py_function(self.tokenizer.texts_to_sequences, (ac, self.max_seq_len), tf.int64)
             ), num_parallel_calls=tf.data.experimental.AUTOTUNE)
-            tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=([10, 10, 2048], [None], [], [None, None]))
+            tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=(InceptionResNetEncoder.IMAGE_FEATURE_SHAPE,
+                                                                            [None], [], [None, None]))
         else:
             tf_dataset = tf_dataset.map(lambda i, c, s, ac: (
                 i, tf.py_function(self.tokenizer.text_to_sequence, (c, self.max_seq_len), tf.int64),
                 tf.py_function(self.style_encoder.transform, (s,), tf.int32)
             ), num_parallel_calls=tf.data.experimental.AUTOTUNE)
-            tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=([10, 10, 2048], [None], []))
+            tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=(InceptionResNetEncoder.IMAGE_FEATURE_SHAPE,
+                                                                            [None], []))
         tf_dataset = tf_dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
         tf_dataset = tf_dataset.repeat(repeat)
         return tf_dataset
@@ -119,7 +121,8 @@ class DatasetManager:
             tf.py_function(self.style_encoder.transform, (s,), tf.int32)
         ), num_parallel_calls=tf.data.experimental.AUTOTUNE)
         tf_dataset = tf_dataset.shuffle(buffer_size=1000)
-        tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=([10, 10, 2048], [None], [None], [None], []))
+        tf_dataset = tf_dataset.padded_batch(batch_size, padded_shapes=(InceptionResNetEncoder.IMAGE_FEATURE_SHAPE,
+                                                                        [None], [None], [None], []))
         tf_dataset = tf_dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
         tf_dataset = tf_dataset.repeat(repeat)
         return tf_dataset
@@ -139,7 +142,7 @@ class DatasetManager:
         )
         tf_dataset = tf_dataset.batch(batch_size)
         tf_dataset = tf_dataset.prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-        encoder = Encoder()
+        encoder = InceptionResNetEncoder()
         num_batches = tf.data.experimental.cardinality(tf_dataset).numpy()
         num_shards = np.ceil(num_batches / num_batches_per_shard).astype(np.int64)
         for shard_id in tqdm(range(num_shards), desc="Writing TFRecord shards", unit="shard"):

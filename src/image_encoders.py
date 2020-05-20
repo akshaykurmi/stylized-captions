@@ -1,7 +1,9 @@
 import tensorflow as tf
 
 
-class Encoder(tf.keras.Model):
+class InceptionResNetEncoder(tf.keras.Model):
+    IMAGE_FEATURE_SHAPE = (9, 9, 1536)
+
     def __init__(self):
         super().__init__()
         self.resnet = tf.keras.applications.inception_resnet_v2.InceptionResNetV2(include_top=False, weights="imagenet")
