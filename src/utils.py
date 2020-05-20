@@ -34,7 +34,7 @@ class MultiCheckpointManager:
         for checkpoint_name, objects_to_save in config.items():
             checkpoint = tf.train.Checkpoint(**objects_to_save)
             manager = tf.train.CheckpointManager(checkpoint, os.path.join(checkpoints_dir, checkpoint_name),
-                                                 max_to_keep=1, keep_checkpoint_every_n_hours=0.5,
+                                                 max_to_keep=1, keep_checkpoint_every_n_hours=1,
                                                  checkpoint_name=checkpoint_name)
             self.checkpoints[checkpoint_name] = checkpoint
             self.checkpoint_managers[checkpoint_name] = manager

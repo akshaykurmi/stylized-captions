@@ -36,7 +36,7 @@ args = parser.parse_args()
 
 args.run_id = f"run_{args.run_id}"
 args.base_dir = os.path.dirname(os.path.dirname(__file__))
-args.data_dir = os.path.join(args.base_dir, "personality_captions_data")
+args.data_dir = os.path.join(args.base_dir, "data", "personality_captions_data")
 args.cache_dir = os.path.join(args.data_dir, "cache")
 args.results_dir = os.path.join(args.base_dir, "results")
 args.run_dir = os.path.join(args.results_dir, args.run_id)
