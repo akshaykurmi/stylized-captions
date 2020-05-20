@@ -6,15 +6,15 @@ logger = logging.getLogger(__name__)
 
 
 class GeneratorMLELoss:
-    def __call__(self, captions, logits, attention_alphas, dsa_lambda):
+    def __call__(self, captions, logits):
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(captions, logits)
         mask = tf.cast(tf.sign(tf.abs(captions)), tf.float32)
         loss *= mask
         loss = tf.reduce_sum(loss, axis=1)
         loss /= tf.reduce_sum(mask, axis=1)
         nll_loss = tf.reduce_mean(loss)
-        dsa_loss = dsa_lambda * tf.reduce_mean((1 - tf.reduce_sum(attention_alphas, axis=1)) ** 2)
-        return nll_loss, dsa_loss
+        # dsa_loss = dsa_lambda * tf.reduce_mean((1 - tf.reduce_sum(attention_alphas, axis=1)) ** 2)
+        return nll_loss
 
 
 class PolicyGradientLoss:

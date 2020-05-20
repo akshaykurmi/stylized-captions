@@ -5,6 +5,7 @@ from collections import defaultdict
 import tensorflow as tf
 from tqdm import tqdm
 
+from .transformer import TransformerGenerator
 from .losses import GeneratorMLELoss, PolicyGradientLoss
 from .models import Generator, Discriminator
 from .utils import set_seed, MultiCheckpointManager
@@ -77,31 +78,36 @@ def generator_loss_pg(batch, generator, discriminator, loss_fn, rollout, tokeniz
 
 
 @tf.function
-def generator_train_batch_mle(batch, generator, loss_fn, optimizer, dsa_lambda, teacher_forcing_rate):
+def generator_train_batch_mle(batch, generator, loss_fn, optimizer):
     with tf.GradientTape(watch_accessed_variables=False) as tape:
         tape.watch(generator.trainable_variables)
         encoder_output, captions, styles = batch[0], batch[1], batch[2]
-        logits, attention_alphas, sort_indices = generator.forward(encoder_output, captions, styles,
-                                                                   teacher_forcing_rate=teacher_forcing_rate,
-                                                                   mode="stochastic", training=True)
-        captions = tf.gather(captions, sort_indices)[:, 1:]
-        nll_loss, dsa_loss = loss_fn(captions, logits, attention_alphas, dsa_lambda)
-        loss = nll_loss + dsa_loss
+        logger.info(encoder_output.shape)
+        # logits, attention_alphas, sort_indices = generator.forward(encoder_output, captions, styles,
+        #                                                            teacher_forcing_rate=teacher_forcing_rate,
+        #                                                            mode="stochastic", training=True)
+        # captions = tf.gather(captions, sort_indices)[:, 1:]
+        logits = generator(encoder_output, captions, styles, training=True)
+        captions = captions[:, 1:]
+        logits = logits[:, :-1, :]
+        loss = loss_fn(captions, logits)
         gradients = tape.gradient(loss, generator.trainable_variables)
     optimizer.apply_gradients(zip(gradients, generator.trainable_variables))
-    return loss, nll_loss, dsa_loss
+    return loss
 
 
 @tf.function
-def generator_loss_mle(batch, generator, loss_fn, dsa_lambda):
+def generator_loss_mle(batch, generator, loss_fn):
     encoder_output, captions, styles = batch[0], batch[1], batch[2]
-    logits, attention_alphas, sort_indices = generator.forward(encoder_output, captions, styles,
-                                                               mode="stochastic", teacher_forcing_rate=0,
-                                                               training=False)
-    captions = tf.gather(captions, sort_indices)[:, 1:]
-    nll_loss, dsa_loss = loss_fn(captions, logits, attention_alphas, dsa_lambda)
-    loss = nll_loss + dsa_loss
-    return loss, nll_loss, dsa_loss
+    # logits, attention_alphas, sort_indices = generator.forward(encoder_output, captions, styles,
+    #                                                            mode="stochastic", teacher_forcing_rate=0,
+    #                                                            training=False)
+    # captions = tf.gather(captions, sort_indices)[:, 1:]
+    logits = generator(encoder_output, captions, styles, training=True)
+    captions = captions[:, 1:]
+    logits = logits[:, :-1, :]
+    loss = loss_fn(captions, logits)
+    return loss
 
 
 @tf.function
@@ -155,13 +161,18 @@ def pretrain_generator(args, dataset_manager):
     set_seed(args.seed)
 
     logger.info("-- Initializing")
-    generator = Generator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
-                          style_vocab_size=dataset_manager.style_encoder.num_classes,
-                          style_embedding_units=args.generator_style_embedding_units,
-                          token_embedding_units=args.generator_token_embedding_units,
-                          lstm_units=args.generator_lstm_units, lstm_dropout=args.generator_lstm_dropout,
-                          attention_units=args.generator_attention_units, encoder_units=args.generator_encoder_units,
-                          z_units=args.generator_z_units, stylize=args.stylize)
+    # generator = Generator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
+    #                       style_vocab_size=dataset_manager.style_encoder.num_classes,
+    #                       style_embedding_units=args.generator_style_embedding_units,
+    #                       token_embedding_units=args.generator_token_embedding_units,
+    #                       lstm_units=args.generator_lstm_units, lstm_dropout=args.generator_lstm_dropout,
+    #                       attention_units=args.generator_attention_units, encoder_units=args.generator_encoder_units,
+    #                       z_units=args.generator_z_units, stylize=args.stylize)
+    generator = TransformerGenerator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
+                                     style_vocab_size=dataset_manager.style_encoder.num_classes,
+                                     model_dim=512, style_dim=64, pffn_dim=2048, z_dim=512,
+                                     encoder_blocks=2, decoder_blocks=6, num_attention_heads=8, max_pe=64,
+                                     dropout=0.1, stylize=True)
 
     loss_fn = GeneratorMLELoss()
     optimizer = tf.keras.optimizers.Adam(learning_rate=args.generator_pretrain_learning_rate,
@@ -185,24 +196,20 @@ def pretrain_generator(args, dataset_manager):
 
     for train_batch in tqdm(train_dataset, desc="Batch", unit="batch"):
         global_step.assign_add(1)
-        teacher_forcing_rate = args.teacher_forcing_schedule(global_step)
-        loss, nll_loss, dsa_loss = generator_train_batch_mle(train_batch, generator, loss_fn, optimizer,
-                                                             args.generator_pretrain_dsa_lambda, teacher_forcing_rate)
+        loss = generator_train_batch_mle(train_batch, generator, loss_fn, optimizer)
         if global_step % args.generator_pretrain_logging_steps == 0:
             with train_summary_writer.as_default(), tf.name_scope("generator_pretraining"):
                 tf.summary.scalar("mle_loss", loss, step=global_step)
-                tf.summary.scalar("nll_loss", nll_loss, step=global_step)
-                tf.summary.scalar("dsa_loss", dsa_loss, step=global_step)
-                tf.summary.scalar("teacher_forcing_rate", teacher_forcing_rate, step=global_step)
+                # tf.summary.scalar("nll_loss", nll_loss, step=global_step)
+                # tf.summary.scalar("dsa_loss", dsa_loss, step=global_step)
+                # tf.summary.scalar("teacher_forcing_rate", teacher_forcing_rate, step=global_step)
         if global_step % args.generator_pretrain_validate_steps == 0:
             logger.info("-- Calculating validation loss")
-            losses = [generator_loss_mle(val_batch, generator, loss_fn, args.generator_pretrain_dsa_lambda)
-                      for val_batch in val_dataset]
-            losses = list(zip(*losses))
+            losses = [generator_loss_mle(val_batch, generator, loss_fn) for val_batch in val_dataset]
             with val_summary_writer.as_default(), tf.name_scope("generator_pretraining"):
-                tf.summary.scalar("mle_loss", tf.reduce_mean(losses[0]), step=global_step)
-                tf.summary.scalar("nll_loss", tf.reduce_mean(losses[1]), step=global_step)
-                tf.summary.scalar("dsa_loss", tf.reduce_mean(losses[2]), step=global_step)
+                tf.summary.scalar("mle_loss", tf.reduce_mean(losses), step=global_step)
+                # tf.summary.scalar("nll_loss", tf.reduce_mean(losses[1]), step=global_step)
+                # tf.summary.scalar("dsa_loss", tf.reduce_mean(losses[2]), step=global_step)
         if global_step % args.generator_pretrain_checkpoint_steps == 0:
             checkpoint_manager.save(["generator", "generator_pretrain_params"])
 
