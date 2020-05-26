@@ -9,6 +9,7 @@ from pycocoevalcap.spice.spice import Spice
 from tqdm import tqdm
 
 from .models import Encoder, Generator
+from .transformer import TransformerGenerator
 from .utils import MultiCheckpointManager
 
 logger = logging.getLogger(__name__)
@@ -57,15 +58,11 @@ def generate_captions_for_image(args, dataset_manager, checkpoint_number):
 def score_on_test_set(args, dataset_manager, checkpoint_numbers):
     for checkpoint_number in checkpoint_numbers:
         logger.info(f"-- Evaluating checkpoint {checkpoint_number}")
-        generator = Generator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
-                              style_vocab_size=dataset_manager.style_encoder.num_classes,
-                              style_embedding_units=args.generator_style_embedding_units,
-                              token_embedding_units=args.generator_token_embedding_units,
-                              lstm_units=args.generator_lstm_units,
-                              lstm_dropout=args.generator_lstm_dropout,
-                              attention_units=args.generator_attention_units,
-                              encoder_units=args.generator_encoder_units,
-                              z_units=args.generator_z_units, stylize=args.stylize)
+        generator = TransformerGenerator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
+                                         style_vocab_size=dataset_manager.style_encoder.num_classes,
+                                         model_dim=512, style_dim=64, pffn_dim=2048, z_dim=512,
+                                         encoder_blocks=2, decoder_blocks=6, num_attention_heads=8, max_pe=64,
+                                         dropout=0.1, stylize=True)
         checkpoint_manager = MultiCheckpointManager(args.checkpoints_dir, {
             "generator": {"generator": generator}
         })

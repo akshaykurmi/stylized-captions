@@ -1,5 +1,6 @@
 import numpy as np
 import tensorflow as tf
+import tensorflow_probability as tfp
 
 from src.image_encoders import InceptionResNetEncoder
 
@@ -167,6 +168,7 @@ class TransformerGenerator(tf.keras.Model):
     def __init__(self, token_vocab_size, style_vocab_size, model_dim, style_dim, pffn_dim, z_dim, encoder_blocks,
                  decoder_blocks, num_attention_heads, max_pe, dropout, stylize):
         super().__init__()
+        self.token_vocab_size = token_vocab_size
         self.encoder = Encoder(blocks=encoder_blocks, model_dim=model_dim, style_dim=style_dim, pffn_dim=pffn_dim,
                                num_heads=num_attention_heads, style_vocab_size=style_vocab_size, dropout=dropout,
                                stylize=stylize)
@@ -174,19 +176,115 @@ class TransformerGenerator(tf.keras.Model):
                                num_heads=num_attention_heads, token_vocab_size=token_vocab_size,
                                dropout=dropout, max_pe=max_pe)
         self.final_layer = tf.keras.layers.Dense(token_vocab_size, activation="linear")
-        self.call(tf.ones((3, *InceptionResNetEncoder.IMAGE_FEATURE_SHAPE)), tf.ones((3, 10)), tf.ones((3,)), True)
+        self.forward(tf.ones((3, *InceptionResNetEncoder.IMAGE_FEATURE_SHAPE)), tf.ones((3, 10)), tf.ones((3,)), True)
 
-    def call(self, image_feature, caption, style, training):
-        image_feature = self._reshape_image_feature(image_feature)
-        encoder_padding_mask, decoder_padding_mask, look_ahead_mask = self._create_masks(caption)
+    def call(self, image_feature, caption, style, training, encoder_padding_mask, decoder_padding_mask,
+             look_ahead_mask):
         encoder_output = self.encoder(image_feature, style, encoder_padding_mask, training)
         decoder_output = self.decoder(encoder_output, caption, decoder_padding_mask, look_ahead_mask, training)
         logits = self.final_layer(decoder_output)
         return logits
 
+    def forward(self, image_feature, caption, style, training):
+        image_feature = self._reshape_image_feature(image_feature)
+        encoder_padding_mask, decoder_padding_mask, look_ahead_mask = self._create_masks(caption)
+        return self.call(image_feature, caption, style, training, encoder_padding_mask, decoder_padding_mask,
+                         look_ahead_mask)
+
+    def sample(self, image_feature, initial_sequence, style, sequence_length, mode, n_samples, training, sos, eos):
+        if mode not in ["stochastic", "deterministic"]:
+            raise ValueError(f"Mode must be one of - stochastic, deterministic")
+
+        image_feature = self._reshape_image_feature(image_feature)
+        initial_sequence_length = initial_sequence.shape[1]
+        samples = []
+        sample_logits = []
+        for n in range(n_samples):
+            sequence = initial_sequence
+            logits = None
+            for t in range(initial_sequence_length, sequence_length):
+                encoder_padding_mask, decoder_padding_mask, look_ahead_mask = self._create_masks(sequence)
+                logits = self.call(image_feature, sequence, style, training, encoder_padding_mask, decoder_padding_mask,
+                                   look_ahead_mask)
+                logits_t = logits[:, -1:, :]
+                if mode == "deterministic":
+                    token = tf.cast(tf.argmax(logits_t, axis=-1), tf.int64)
+                else:
+                    token = tfp.distributions.Categorical(logits=logits_t, dtype=tf.int64).sample()
+                sequence = tf.concat([sequence, token], axis=1)
+
+            oh = tf.expand_dims(tf.math.log(
+                tf.one_hot([sos] * logits.shape[0], depth=logits.shape[-1], dtype=tf.float32)
+            ), axis=1)
+            logits = tf.concat([oh, logits], axis=1)
+
+            eos_mask = self._get_eos_mask(sequence, eos)
+            samples.append(sequence * tf.cast(eos_mask, dtype=tf.int64))
+            sample_logits.append(logits * tf.cast(
+                tf.repeat(tf.expand_dims(eos_mask, axis=2), self.token_vocab_size, axis=2),
+                dtype=tf.float32
+            ))
+
+        return samples, sample_logits
+
+    def beam_search(self, image_feature, style, sequence_length, beam_size, sos, eos):
+        batch_size = image_feature.shape[0]
+
+        image_feature = self._reshape_image_feature(image_feature)
+        image_feature = tf.reshape(tf.tile(image_feature, [1, beam_size, 1]),
+                                   ((batch_size * beam_size), *image_feature.shape[1:]))
+        style = tf.tile(style, [beam_size])
+
+        sequences = tf.constant(sos, shape=((batch_size * beam_size), 1), dtype=tf.int64)  # (8*5, 1)
+        sequences_logits = tf.constant(0, shape=((batch_size * beam_size), 1), dtype=tf.float32)  # (8*5, 1)
+
+        for t in range(sequence_length - 1):
+            current_tokens = sequences[:, -1]
+            current_logits = sequences_logits[:, -1]
+
+            encoder_padding_mask, decoder_padding_mask, look_ahead_mask = self._create_masks(sequences)
+            logits = self.call(image_feature, sequences, style, False, encoder_padding_mask, decoder_padding_mask,
+                               look_ahead_mask)
+            logits_t = logits[:, -1, :]
+
+            logits_t = tf.math.log(tf.nn.softmax(logits_t))
+            logits_l1, indices_l1 = tf.math.top_k(logits_t, k=beam_size)  # (8*5, 5)
+            logits_l1 += tf.transpose(tf.reshape(
+                tf.tile(current_logits, [beam_size]), (beam_size, batch_size * beam_size)
+            ))
+            logits_l1 = tf.reshape(logits_l1, (batch_size, beam_size * beam_size))  # (8, 5*5)
+            indices_l1 = tf.cast(indices_l1, dtype=tf.int64)
+            indices_l1 = tf.reshape(indices_l1, (batch_size, beam_size * beam_size))  # (8, 5*5)
+            logits_l2, indices_l2 = tf.math.top_k(logits_l1, k=beam_size)  # (8, 5)
+
+            next_tokens = tf.gather_nd(indices_l1, tf.stack([
+                tf.repeat(tf.range(batch_size), beam_size, axis=0),
+                tf.reshape(indices_l2, (-1,))
+            ], axis=1))
+
+            current_reordered_indices = tf.math.reduce_sum(tf.stack([
+                tf.repeat(tf.range(batch_size), beam_size, axis=0) * beam_size,
+                tf.reshape(tf.cast(indices_l2 / 5, dtype=tf.int32), (-1,))
+            ], axis=1), axis=1)
+            current_tokens = tf.gather(current_tokens, current_reordered_indices)
+
+            sequences = tf.slice(sequences, [0, 0], [batch_size * beam_size, sequences.shape[1] - 1])
+            sequences = tf.concat([
+                sequences, tf.expand_dims(current_tokens, axis=1), tf.expand_dims(next_tokens, axis=1)
+            ], axis=1)
+            sequences_logits = tf.concat([
+                sequences_logits, tf.reshape(logits_l2, (-1, 1))
+            ], axis=1)
+
+        eos_mask = self._get_eos_mask(sequences, eos)
+        sequences = sequences * tf.cast(eos_mask, dtype=tf.int64)
+        sequences = tf.reshape(sequences, (batch_size, beam_size, -1))
+        sequences_logits = tf.reshape(sequences_logits[:, -1], (batch_size, beam_size))
+        return sequences, sequences_logits
+
     @staticmethod
-    def _reshape_image_feature(encoder_output):
-        return tf.reshape(encoder_output, shape=(encoder_output.shape[0], -1, encoder_output.shape[3]))
+    def _reshape_image_feature(image_feature):
+        return tf.reshape(image_feature, shape=(image_feature.shape[0], -1, image_feature.shape[3]))
 
     @staticmethod
     def _create_masks(caption):
@@ -202,3 +300,15 @@ class TransformerGenerator(tf.keras.Model):
         caption_padding_mask = create_padding_mask(caption)
         look_ahead_mask = tf.maximum(caption_padding_mask, look_ahead_mask)
         return None, None, look_ahead_mask
+
+    @staticmethod
+    def _get_eos_mask(sequence, eos):
+        batch_size, sequence_length = sequence.shape[0], sequence.shape[1]
+        mask = tf.tensor_scatter_nd_update(
+            sequence, tf.stack([tf.range(batch_size), tf.constant(sequence_length - 1, shape=(batch_size,))], axis=1),
+            tf.constant(eos, dtype=tf.int64, shape=(batch_size,))
+        )
+        mask = tf.broadcast_to(tf.expand_dims(tf.argmax(tf.cast(mask == eos, tf.int64), axis=1), axis=1),
+                               (batch_size, sequence_length))
+        mask = mask >= tf.broadcast_to(tf.range(sequence_length, dtype=tf.int64), (batch_size, sequence_length))
+        return mask

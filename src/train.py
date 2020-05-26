@@ -82,12 +82,11 @@ def generator_train_batch_mle(batch, generator, loss_fn, optimizer):
     with tf.GradientTape(watch_accessed_variables=False) as tape:
         tape.watch(generator.trainable_variables)
         encoder_output, captions, styles = batch[0], batch[1], batch[2]
-        logger.info(encoder_output.shape)
         # logits, attention_alphas, sort_indices = generator.forward(encoder_output, captions, styles,
         #                                                            teacher_forcing_rate=teacher_forcing_rate,
         #                                                            mode="stochastic", training=True)
         # captions = tf.gather(captions, sort_indices)[:, 1:]
-        logits = generator(encoder_output, captions, styles, training=True)
+        logits = generator.forward(encoder_output, captions, styles, training=True)
         captions = captions[:, 1:]
         logits = logits[:, :-1, :]
         loss = loss_fn(captions, logits)
@@ -103,7 +102,7 @@ def generator_loss_mle(batch, generator, loss_fn):
     #                                                            mode="stochastic", teacher_forcing_rate=0,
     #                                                            training=False)
     # captions = tf.gather(captions, sort_indices)[:, 1:]
-    logits = generator(encoder_output, captions, styles, training=True)
+    logits = generator.forward(encoder_output, captions, styles, training=True)
     captions = captions[:, 1:]
     logits = logits[:, :-1, :]
     loss = loss_fn(captions, logits)
