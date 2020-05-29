@@ -1,3 +1,4 @@
+import json
 import logging
 
 import tensorflow as tf
@@ -152,3 +153,33 @@ def _run_beam_search(generator, encoder_output, style, beam_size, sequence_lengt
 def _seq_to_text(dataset_manager, seq):
     text = dataset_manager.tokenizer.sequences_to_texts(seq[seq > 0]).numpy()
     return " ".join([t.decode("utf-8") for t in text][1:-1])
+
+
+def list_test_captions(args, dataset_manager, checkpoint_number):
+    generator = TransformerGenerator(token_vocab_size=dataset_manager.tokenizer.vocab_size,
+                                     style_vocab_size=dataset_manager.style_encoder.num_classes,
+                                     model_dim=512, style_dim=64, pffn_dim=2048, z_dim=512,
+                                     encoder_blocks=2, decoder_blocks=6, num_attention_heads=8, max_pe=64,
+                                     dropout=0.1, stylize=True)
+    checkpoint_manager = MultiCheckpointManager(args.checkpoints_dir, {
+        "generator": {"generator": generator}
+    })
+    checkpoint_manager.restore({"generator": checkpoint_number})
+
+    num_test_samples = 10000
+    batch_size = 32
+    test_dataset = dataset_manager.load_generator_dataset("test", batch_size, 1)
+
+    predictions = {}
+    sample_id = 0
+    for batch in tqdm(test_dataset, desc="Batch", unit="batch", total=int(num_test_samples / batch_size) + 1):
+        encoder_output, caption, style, additional_captions = batch
+        sequences, sequences_logits = _run_beam_search(generator, encoder_output, style, 5, args.max_seq_len,
+                                                       dataset_manager.tokenizer.start_id,
+                                                       dataset_manager.tokenizer.end_id)
+        for s, c, acs in zip(sequences.numpy(), caption.numpy(), additional_captions.numpy()):
+            predictions[sample_id] = _seq_to_text(dataset_manager, s[0])
+            sample_id += 1
+
+    with open("preds.json", "w") as f:
+        json.dump(predictions, f)

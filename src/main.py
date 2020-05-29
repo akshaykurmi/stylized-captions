@@ -5,7 +5,7 @@ import argparse
 import shutil
 
 from .datasets import PersonalityCaptions, DatasetManager
-from .evaluate import generate_captions_for_image, score_on_test_set, human_performance_on_test_set
+from .evaluate import generate_captions_for_image, score_on_test_set, human_performance_on_test_set, list_test_captions
 from .schedules import ExponentialSchedule
 from .train import pretrain_generator, pretrain_discriminator, adversarially_train_generator_and_discriminator
 from .utils import init_logging
@@ -28,6 +28,7 @@ parser.add_argument("--run_human_evaluation", default=False, action="store_true"
 parser.add_argument("--run_evaluation", default=False, action="store_true")
 parser.add_argument("--checkpoints_to_evaluate", default="")
 parser.add_argument("--generate_captions_for_image", default=False, action="store_true")
+parser.add_argument("--generate_test_captions", default=False, action="store_true")
 parser.add_argument("--checkpoint_to_generate_from", default="")
 
 parser.add_argument("--stylize", default=False, action="store_true")
@@ -136,3 +137,6 @@ if args.run_human_evaluation:
 
 if args.generate_captions_for_image:
     generate_captions_for_image(args, dataset_manager, int(args.checkpoint_to_generate_from))
+
+if args.generate_test_captions:
+    list_test_captions(args, dataset_manager, int(args.checkpoint_to_generate_from))
